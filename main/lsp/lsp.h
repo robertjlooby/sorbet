@@ -70,6 +70,8 @@ class LSPLoop {
                                                              const TextDocumentPositionParams &params) const;
     std::unique_ptr<ResponseMessage> handleTextDocumentDocumentSymbol(LSPTypechecker &typechecker, const MessageId &id,
                                                                       const DocumentSymbolParams &params) const;
+    std::vector<std::unique_ptr<SymbolInformation>> getWorkspaceSymbolsForQuery(LSPTypechecker &typechecker,
+                                                                                std::string query) const;
     std::unique_ptr<ResponseMessage> handleWorkspaceSymbols(LSPTypechecker &typechecker, const MessageId &id,
                                                             const WorkspaceSymbolParams &params) const;
     std::vector<std::unique_ptr<Location>>

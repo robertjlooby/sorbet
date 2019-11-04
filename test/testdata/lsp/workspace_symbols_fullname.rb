@@ -6,7 +6,7 @@ end
 
 class Foo
   #   ^^^ symbol-search: "Foo"
-  #   TODO: support case-insensitive matches ^^^ symbol-search: "foo"
+  #   ^^^ symbol-search: "foo"
   def foo
     # ^^^ symbol-search: "foo"
   end
@@ -19,7 +19,7 @@ module Bar
 
   module Foo
     #    ^^^ symbol-search: "Foo"
-    #    TODO: support case-insensitive matches ^^^ symbol-search: "foo"
+    #    ^^^ symbol-search: "foo"
     def foo
       # ^^^ symbol-search: "foo"
     end
