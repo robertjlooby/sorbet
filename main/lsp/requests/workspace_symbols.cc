@@ -30,8 +30,8 @@ SymbolInformation *symbolRef2SymbolInformation(const LSPConfiguration &config, c
     return result;
 }
 
-std::vector<unique_ptr<SymbolInformation>> LSPLoop::getWorkspaceSymbolsForQuery(LSPTypechecker &typechecker,
-                                                                                std::string query) const {
+std::vector<unique_ptr<SymbolInformation>> getWorkspaceSymbolsForQuery(const LSPConfiguration &config,
+                                                                       const core::GlobalState &gs, std::string query) {
     int limit = MAX_RESULTS;
     std::string rawRegex = "";
     int numCapturingGroups = 0;
@@ -52,7 +52,6 @@ std::vector<unique_ptr<SymbolInformation>> LSPLoop::getWorkspaceSymbolsForQuery(
     regex weightedRegex(rawRegex);
     smatch sm;
     vector<pair<int, u4>> weightedResults;
-    const core::GlobalState &gs = typechecker.state();
     for (u4 idx = 1; idx < gs.symbolsUsed(); idx++) {
         core::SymbolRef symbolRef(gs, idx);
         const string shortName(symbolRef.data(gs)->name.data(gs)->shortName(gs));
@@ -67,7 +66,7 @@ std::vector<unique_ptr<SymbolInformation>> LSPLoop::getWorkspaceSymbolsForQuery(
     vector<unique_ptr<SymbolInformation>> results;
     for (auto [weight, idx] : weightedResults) {
         core::SymbolRef ref(gs, idx);
-        auto data = symbolRef2SymbolInformation(*config, gs, ref);
+        auto data = symbolRef2SymbolInformation(config, gs, ref);
         if (data != nullptr) {
             results.emplace_back(data);
             if (results.size() >= limit) {
@@ -93,7 +92,7 @@ unique_ptr<ResponseMessage> LSPLoop::handleWorkspaceSymbols(LSPTypechecker &type
     string searchString(params.query);
     ShowOperation op(*config, "WorkspaceSymbols", fmt::format("Searching for symbol `{}`...", searchString));
 
-    response->result = getWorkspaceSymbolsForQuery(typechecker, searchString);
+    response->result = getWorkspaceSymbolsForQuery(*config, typechecker.state(), searchString);
     return response;
 }
 } // namespace sorbet::realmain::lsp
