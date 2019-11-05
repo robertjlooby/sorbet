@@ -82,10 +82,9 @@ class FlattenWalk {
         //  def self.bar; end
         //
         // which means when we get to `bar` we need to know that the outer context `foo` is static. We pass that down
-        // the current stack by means of this `staticLevel` variable.
-        int staticLevel;
-        MethodData(optional<int> targetLocation, int staticLevel)
-            : targetLocation(targetLocation), staticLevel(staticLevel){};
+        // the current stack by means of this `isStatic` variable.
+        bool isStatic;
+        MethodData(optional<int> targetLocation, bool isStatic) : targetLocation(targetLocation), isStatic(isStatic){};
     };
 
     // This represents something that needs to be moved to the end of the class scope as well as information about how
@@ -93,8 +92,8 @@ class FlattenWalk {
     // whether it should be in a `class << self` block.
     struct MovedItem {
         unique_ptr<ast::Expression> expr;
-        int staticLevel;
-        MovedItem(unique_ptr<ast::Expression> expr, int staticLevel) : expr(move(expr)), staticLevel(staticLevel){};
+        bool isStatic;
+        MovedItem(unique_ptr<ast::Expression> expr, bool isStatic) : expr(move(expr)), isStatic(isStatic){};
         MovedItem() = default;
     };
 
@@ -109,16 +108,16 @@ class FlattenWalk {
         ClassScope() = default;
 
         // push a method scope, possibly noting whether
-        void pushScope(int staticLevel) {
+        void pushScope(bool isStatic) {
             if (stack.size() == 0) {
                 // we're at the top level of a class, not nested inside a method, which means we don't need to move
                 // anything: we'll add to the stack but don't need to allocate space on the move queue
-                stack.emplace_back(std::nullopt, staticLevel);
+                stack.emplace_back(std::nullopt, isStatic);
             } else {
                 // we're nested inside another method: that means that whatever scope we're recording is going to need
                 // to be moved out, so we'll allocate space in the move queue and note the index of the allocated space
                 // (so that we can reconstruct the original traversal order)
-                stack.emplace_back(moveQueue.size(), staticLevel);
+                stack.emplace_back(moveQueue.size(), isStatic);
                 moveQueue.emplace_back();
             }
         }
@@ -151,7 +150,7 @@ class FlattenWalk {
             int idx = *md.targetLocation;
             ENFORCE(moveQueue.size() > idx);
             ENFORCE(moveQueue[idx].expr == nullptr);
-            moveQueue[idx] = {move(expr), md.staticLevel};
+            moveQueue[idx] = {move(expr), md.isStatic};
         }
     };
 
@@ -160,10 +159,16 @@ class FlattenWalk {
     // need to move to the end, so we keep that below on the stack.
     vector<ClassScope> classScopes;
 
-    int computeStaticLevel(const ast::MethodDef &methodDef) {
+    bool computeIsStatic(const ast::MethodDef &methodDef) {
         auto &methods = curMethodSet();
-        int prevLevel = methods.stack.empty() ? 0 : methods.stack.back().staticLevel;
-        return prevLevel + (methodDef.isSelf() ? 1 : 0);
+        if (methods.stack.empty() || methods.stack.back().isStatic) {
+            // if we're at the top level or we're in a static method, then `def self.foo` defines a static method
+            return methodDef.isSelf();
+        } else {
+            // the method stack is non-empty and the top thing is a non-static method, which means a `self.foo` in this
+            // context is still an "instance" method, albeit one that cannot be called on anything but the instance
+            return false;
+        }
     }
 
     void newMethodSet() {
@@ -197,57 +202,11 @@ class FlattenWalk {
         }
 
         auto exprs = popCurMethodDefs();
-        // TODO: remove all this
-        //
-        // this add the nested methods at the appropriate 'staticness level'
-
-        int highestLevel = 0;
-        for (int i = 0; i < exprs.size(); i++) {
-            auto &expr = exprs[i];
-            if (highestLevel < expr.staticLevel) {
-                highestLevel = expr.staticLevel;
-            }
-            // we need to make sure that we keep sends with their attached methods, so fix that up here
-            if (i > 0) {
-                auto send = ast::cast_tree<ast::Send>(exprs[i - 1].expr.get());
-                if (send != nullptr && send->fun == core::Names::sig()) {
-                    exprs[i - 1].staticLevel = expr.staticLevel;
-                }
-            }
-        }
-
-        // these will store the bodies of the `class << self` blocks we create at the end
-        vector<ast::ClassDef::RHS_store> nestedBlocks;
-        for (int level = 2; level <= highestLevel; level++) {
-            nestedBlocks.emplace_back();
-        }
-
-        // this vector contains all the possible RHS target locations that we might move to
-        vector<ast::ClassDef::RHS_store *> targets;
-        // 0 and 1 both go into the class itself
-        targets.emplace_back(&rhs);
-        targets.emplace_back(&rhs);
-        // 2 and up go into the to-be-created `class << self` blocks
-        for (auto &tgt : nestedBlocks) {
-            targets.emplace_back(&tgt);
-        }
-
-        // move everything to its appropriate target
         for (auto &expr : exprs) {
-            if (auto methodDef = ast::cast_tree<ast::MethodDef>(expr.expr.get())) {
-                methodDef->setIsSelf(expr.staticLevel > 0);
+            if (auto mdef = ast::cast_tree<ast::MethodDef>(expr.expr.get())) {
+                mdef->setIsSelf(expr.isStatic);
             }
-            targets[expr.staticLevel]->emplace_back(std::move(expr.expr));
-        }
-
-        // generate the nested `class << self` blocks as needed and add them to the class
-        for (auto &body : nestedBlocks) {
-            auto classDef =
-                ast::MK::Class(loc, loc,
-                               make_unique<ast::UnresolvedIdent>(core::Loc::none(), ast::UnresolvedIdent::Class,
-                                                                 core::Names::singleton()),
-                               {}, std::move(body), ast::ClassDefKind::Class);
-            rhs.emplace_back(std::move(classDef));
+            rhs.emplace_back(move(expr.expr));
         }
 
         return rhs;
@@ -276,7 +235,7 @@ public:
         // that we don't know the 'staticness level' of a sig, as it depends on the method that follows it (whether that
         // method has a `self.` or not), so we'll fill that information in later
         if (send->fun == core::Names::sig()) {
-            curMethodSet().pushScope(0);
+            curMethodSet().pushScope(false);
         }
 
         return send;
@@ -298,7 +257,7 @@ public:
 
     unique_ptr<ast::MethodDef> preTransformMethodDef(core::Context ctx, unique_ptr<ast::MethodDef> methodDef) {
         // add a new scope for this method def
-        curMethodSet().pushScope(computeStaticLevel(*methodDef));
+        curMethodSet().pushScope(computeIsStatic(*methodDef));
         return methodDef;
     }
 
